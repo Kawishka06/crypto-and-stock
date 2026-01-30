@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+pandas
+numpy
+joblib
+yfinance
+scikit-learn
+tensorflow==2.15.0
