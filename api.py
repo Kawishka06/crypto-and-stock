@@ -68,7 +68,8 @@ def forecast_series(series: pd.Series, model_path: Path, scaler_path: Path, hori
         raise HTTPException(status_code=404, detail=f"Missing scaler: {scaler_path.name}")
 
     # Load model + scaler
-    model = load_model(model_path)
+    model = load_model(model_path, compile=False)
+
     scaler = joblib.load(scaler_path)
 
     values = series.values.reshape(-1, 1)
