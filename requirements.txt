@@ -1,7 +1,7 @@
 fastapi
-uvicorn
+uvicorn[standard]
 pandas
-numpy
+numpy<2
 joblib
 yfinance
 scikit-learn
