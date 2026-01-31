@@ -9,7 +9,6 @@ import traceback
 import tensorflow as tf
 import keras
 
-
 from tensorflow.keras.models import load_model
 
 app = FastAPI(title="Crypto + Stock Predictor", version="1.0")
@@ -75,10 +74,16 @@ def load_series_for_sl20() -> pd.Series:
     return series
 
 
+# ✅ UPDATED: more reliable on Render than yf.download()
 def load_series_for_crypto(asset: str) -> pd.Series:
-    df = yf.download(asset, period="max", interval="1d", progress=False)
+    t = yf.Ticker(asset)
+    df = t.history(period="max", interval="1d", auto_adjust=False)
+
     if df is None or df.empty or "Close" not in df.columns:
-        raise HTTPException(status_code=404, detail=f"No price data found for {asset}")
+        df = t.history(period="5y", interval="1d", auto_adjust=False)
+
+    if df is None or df.empty or "Close" not in df.columns:
+        raise HTTPException(status_code=503, detail=f"Yahoo data unavailable for {asset} right now")
 
     series = df["Close"].dropna()
     series.index = pd.to_datetime(series.index)
@@ -115,9 +120,13 @@ def forecast_series(series: pd.Series, model_path: Path, scaler_path: Path, hori
         last_date = pd.to_datetime(series.index[-1])
         dates = next_dates(last_date, horizon, business_days)
 
+        # ✅ FIX: avoid pandas FutureWarning for float(Series)
+        last_val = series.iloc[-1]
+        last_val = float(last_val.item()) if hasattr(last_val, "item") else float(last_val)
+
         return {
             "last_date": last_date.strftime("%Y-%m-%d"),
-            "last_value": float(series.iloc[-1]),
+            "last_value": last_val,
             "predictions": [{"date": d.strftime("%Y-%m-%d"), "yhat": float(y)} for d, y in zip(dates, preds)]
         }
 
@@ -162,3 +171,21 @@ def predict(asset: str = "BTC-USD", horizon: int = 7):
     out = forecast_series(series, model_path, scaler_path, horizon, business_days=False)
     out["asset"] = asset
     return out
+
+
+# ✅ NEW: history endpoint for Streamlit "Actual + Forecast"
+@app.get("/history")
+def history(asset: str = "BTC-USD", period_days: int = 365):
+    asset = asset.upper().strip()
+
+    if period_days < 30 or period_days > 3650:
+        raise HTTPException(status_code=400, detail="period_days must be 30..3650")
+
+    if asset == "SL20_SYN":
+        series = load_series_for_sl20().tail(period_days)
+        out = [{"date": idx.strftime("%Y-%m-%d"), "close": float(val)} for idx, val in series.items()]
+        return {"asset": asset, "history": out}
+
+    series = load_series_for_crypto(asset).tail(period_days)
+    out = [{"date": idx.strftime("%Y-%m-%d"), "close": float(val)} for idx, val in series.items()]
+    return {"asset": asset, "history": out}
