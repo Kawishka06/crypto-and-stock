@@ -4,10 +4,36 @@ import numpy as np
 import joblib
 import yfinance as yf
 from pathlib import Path
+import os
+import traceback
+import tensorflow as tf
+import keras
+
 
 from tensorflow.keras.models import load_model
 
 app = FastAPI(title="Crypto + Stock Predictor", version="1.0")
+
+@app.get("/debug")
+def debug():
+    def list_dir(p):
+        try:
+            return sorted(os.listdir(p))
+        except Exception as e:
+            return [f"ERROR: {e}"]
+
+    return {
+        "python": os.sys.version,
+        "tensorflow": tf.__version__,
+        "keras": keras.__version__,
+        "cwd": os.getcwd(),
+        "base_dir": str(BASE_DIR),
+        "models_dir": str(MODELS_DIR),
+        "data_dir": str(DATA_DIR),
+        "models_files": list_dir(MODELS_DIR),
+        "data_files": list_dir(DATA_DIR),
+    }
+
 
 # -------- Config --------
 LOOKBACK = 60
@@ -62,39 +88,45 @@ def load_series_for_crypto(asset: str) -> pd.Series:
 
 
 def forecast_series(series: pd.Series, model_path: Path, scaler_path: Path, horizon: int, business_days: bool):
-    if not model_path.exists():
-        raise HTTPException(status_code=404, detail=f"Missing model: {model_path.name}")
-    if not scaler_path.exists():
-        raise HTTPException(status_code=404, detail=f"Missing scaler: {scaler_path.name}")
+    try:
+        if not model_path.exists():
+            raise HTTPException(status_code=404, detail=f"Missing model: {model_path.name}")
+        if not scaler_path.exists():
+            raise HTTPException(status_code=404, detail=f"Missing scaler: {scaler_path.name}")
 
-    # Load model + scaler
-    model = load_model(model_path, compile=False)
+        model = load_model(model_path, compile=False)
+        scaler = joblib.load(scaler_path)
 
-    scaler = joblib.load(scaler_path)
+        values = series.values.reshape(-1, 1)
+        scaled = scaler.transform(values)
 
-    values = series.values.reshape(-1, 1)
-    scaled = scaler.transform(values)
+        window = scaled[-LOOKBACK:].reshape(1, LOOKBACK, 1)
 
-    window = scaled[-LOOKBACK:].reshape(1, LOOKBACK, 1)
+        preds_scaled = []
+        current = window.copy()
 
-    preds_scaled = []
-    current = window.copy()
+        for _ in range(horizon):
+            pred = model.predict(current, verbose=0)[0, 0]
+            preds_scaled.append(pred)
+            current = np.append(current[0, 1:, 0], pred).reshape(1, LOOKBACK, 1)
 
-    for _ in range(horizon):
-        pred = model.predict(current, verbose=0)[0, 0]
-        preds_scaled.append(pred)
-        current = np.append(current[0, 1:, 0], pred).reshape(1, LOOKBACK, 1)
+        preds = scaler.inverse_transform(np.array(preds_scaled).reshape(-1, 1)).flatten()
 
-    preds = scaler.inverse_transform(np.array(preds_scaled).reshape(-1, 1)).flatten()
+        last_date = pd.to_datetime(series.index[-1])
+        dates = next_dates(last_date, horizon, business_days)
 
-    last_date = pd.to_datetime(series.index[-1])
-    dates = next_dates(last_date, horizon, business_days)
+        return {
+            "last_date": last_date.strftime("%Y-%m-%d"),
+            "last_value": float(series.iloc[-1]),
+            "predictions": [{"date": d.strftime("%Y-%m-%d"), "yhat": float(y)} for d, y in zip(dates, preds)]
+        }
 
-    return {
-        "last_date": last_date.strftime("%Y-%m-%d"),
-        "last_value": float(series.iloc[-1]),
-        "predictions": [{"date": d.strftime("%Y-%m-%d"), "yhat": float(y)} for d, y in zip(dates, preds)]
-    }
+    except HTTPException:
+        raise
+    except Exception as e:
+        tb = traceback.format_exc()
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}\n{tb}")
+
 
 
 # -------- Routes --------
