@@ -43,5 +43,6 @@ Due to limited availability of public historical data for the Sri Lankan stock m
 ##▶️ Run Locally
 
 pip install -r requirements.txt
+
 uvicorn api:app --reload
 
